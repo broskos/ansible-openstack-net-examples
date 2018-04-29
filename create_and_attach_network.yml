@@ -1,0 +1,297 @@
+---
+- hosts: localhost
+  gather_facts: no
+  vars:
+    dns_servers:
+      - 192.168.2.2
+      - 192.168.2.10
+    subnet_map:
+      vlan202:
+        cidr: 192.168.202.0/24
+        gateway: 192.168.202.1
+        start_ip: 192.168.202.10
+        end_ip: 192.168.202.250
+      vlan203:
+        cidr: 192.168.203.0/24
+        gateway: 192.168.203.1
+        start_ip: 192.168.203.10
+        end_ip: 192.168.203.250
+      vlan204:
+        cidr: 192.168.204.0/24
+        gateway: 192.168.204.1
+        start_ip: 192.168.204.10
+        end_ip: 192.168.204.250
+      vlan205:
+        cidr: 192.168.205.0/24
+        gateway: 192.168.205.1
+        start_ip: 192.168.205.10
+        end_ip: 192.168.205.250
+      vlan206:
+        cidr: 192.168.206.0/24
+        gateway: 192.168.206.1
+        start_ip: 192.168.206.10
+        end_ip: 192.168.206.250
+      vlan207:
+        cidr: 192.168.207.0/24
+        gateway: 192.168.207.1
+        start_ip: 192.168.207.10
+        end_ip: 192.168.207.250
+      vlan208:
+        cidr: 192.168.208.0/24
+        gateway: 192.168.208.1
+        start_ip: 192.168.208.10
+        end_ip: 192.168.208.250
+  tasks:
+
+  - os_network:
+      cloud: overcloud
+      state: present
+      name: tenant1-net
+      external: true
+      provider_physical_network: datacentre
+      provider_network_type: vlan
+      wait: yes
+      # intentionally leaving out provider:segmentation_id so neutron will assign it.
+    register: net
+
+  - set_fact:
+      vlan: "{{net.network['provider:segmentation_id']}}"
+      vlan_name: "vlan{{net.network['provider:segmentation_id']}}"
+
+  - debug:
+      msg: "The network uuid is: {{net.id}}"
+
+  - debug:
+      msg: "The neutron assigned vlan is: {{vlan}}"
+
+  - debug:
+      msg: "The subnet info for that vlan is: cidr: {{subnet_map[vlan_name]['cidr']}} gateway: {{subnet_map[vlan_name]['gateway']}}"
+
+  - os_subnet:
+      cloud: overcloud
+      state: present
+      name: tenant1-subnet
+      network_name: tenant1-net
+      cidr: "{{subnet_map[vlan_name]['cidr']}}"
+      gateway_ip: "{{subnet_map[vlan_name]['gateway']}}"
+      allocation_pool_start: "{{subnet_map[vlan_name]['start_ip']}}"
+      allocation_pool_end: "{{subnet_map[vlan_name]['end_ip']}}"
+      wait: yes
+
+  - os_port:
+      cloud: overcloud
+      state: present
+      name: tenant1-port
+      network: tenant1-net
+    register: port
+
+  - set_fact:
+      ip_address: "{{port.port['fixed_ips'][0]['ip_address']}}"
+      gateway_ip: "{{subnet_map[vlan_name]['gateway']}}"
+      prefix: "{{subnet_map[vlan_name]['cidr'].split('/')[1]}}"
+
+  - debug:
+      msg: "My assigned IP is: {{ip_address}}, prefix: {{prefix}}, gateway: {{gateway_ip}}"
+
+
+#  The section below is commented out because I can't really use ironic to build a
+#  baremetal node in my env.  But the process should be something like the following,
+#  create the server with the right specs then wait for it to become available
+
+#  - name: Deploy a baremetal server
+#    os_server:
+#      state: present
+#      name: tenant1-server1
+#      image: centos-7-x86_64-genericcloud
+#      key_name: undercloud
+#      wait: yes
+#      flavor: my-baremetal-flavor
+#      auto_floating_ip: yes
+#      network: baremetal
+#      meta:
+#        hostname: webserver.localdomain
+#    register: tenant1-server1
+#
+#  - name: Wait for SSH on the Instance
+#    command: >
+#      ssh -oBatchMode=yes -oStrictHostKeyChecking=no
+#      centos@{{tenant1-server1.server.public_v4}} true
+#    register: result
+#    until: result|success
+#    retries: 30
+#    delay: 10
+
+
+# again I'm faking it here as I already know the IP of my static host, but if I didn't I'd use the commented line
+# to pull the information from the server I created
+  - name: Add Instance to Inventory
+    tags: postconfig
+    add_host:
+      name: tenant1-server1
+      groups: testservers
+      ansible_user: cloud-user
+      ansible_ssh_host: 192.168.201.11
+#      ansible_ssh_host={{ tenant1-server1.server.public_v4 }}
+
+- hosts: testservers
+  become: true
+  vars:
+    nics: []
+    nic_count: 0
+    baremetal_nic:
+    vlan_interface:
+  tasks:
+
+  - name: find interface facts for tenant networks
+    tags: postconfig
+    when:
+      - hostvars[inventory_hostname]['ansible_'~item]['active']
+      - hostvars[inventory_hostname]['ansible_'~item]['ipv4'] is not defined
+    set_fact:
+      nics: "{{ nics + [ hostvars[inventory_hostname]['ansible_'~item]['device'] ] }}"
+    with_items:
+       - "{{ ansible_interfaces | map('replace', '-','_') | list }}"
+
+  - name: record number of nics to configure
+    set_fact:
+      nic_count: "{{nics | length}}"
+    tags: postconfig
+
+  - debug:
+      var: nics
+    tags: postconfig
+
+  - name: find interface facts for baremetal network
+    tags: postconfig
+    when:
+      - hostvars[inventory_hostname]['ansible_'~item]['active']
+      - hostvars[inventory_hostname]['ansible_'~item]['ipv4'] is defined
+      - hostvars[inventory_hostname]['ansible_'~item]['ipv4'] != '127.0.0.1'
+    set_fact:
+      baremetal_nic: "{{ hostvars[inventory_hostname]['ansible_'~item]['device'] }}"
+    with_items:
+       - "{{ ansible_interfaces | map('replace', '-','_') | list }}"
+
+  - debug:
+      msg: "I have {{nic_count}} nics that I need to configure for tenant and my baremetal_nic is: {{ baremetal_nic }}"
+    tags: postconfig
+
+  - name: configure tenant nics
+    template:
+      src: nic.j2
+      dest: "/etc/sysconfig/network-scripts/ifcfg-{{ item }}"
+      owner: root
+      group: root
+      mode: 0644
+    with_items: "{{ nics }}"
+
+  - name: set vlan interface if single tenant nic
+    set_fact:
+      vlan_interface:  "{{ nics[0] }}"
+    when: nic_count|int == 1
+
+  - name: set vlan interface to bond if multiple tenant nics
+    set_fact:
+      vlan_interface: "bond0"
+    when: nic_count|int > 1
+
+  - name: set vlan interface to baremetal nic if no tenant nics found
+    set_fact:
+      vlan_interface: "{{ baremetal_nic }}"
+    when: nic_count|int == 0
+
+  - name: configure vlan interface
+    template:
+      src: vlan.j2
+      dest: "/etc/sysconfig/network-scripts/ifcfg-{{ vlan_interface }}.{{ hostvars['localhost'].vlan }}"
+      owner: root
+      group: root
+      mode: 0644
+
+  - name: configure bond interface
+    template:
+      src: bond.j2
+      dest: "/etc/sysconfig/network-scripts/ifcfg-{{ vlan_interface }}"
+      owner: root
+      group: root
+      mode: 0644
+    when: nic_count|int > 1
+
+  - name: disable baremetal nic if there are any tenant nics
+    replace:
+      path: "/etc/sysconfig/network-scripts/ifcfg-{{ baremetal_nic }}"
+      regexp: '^ONBOOT.*'
+      replace: 'ONBOOT=no'
+      group: root
+      mode: 0644
+    when: nic_count|int > 0
+
+  - name: disable dhcp on baremtal nic if there are no tenant nics
+    replace:
+      path: "/etc/sysconfig/network-scripts/ifcfg-{{ baremetal_nic }}"
+      regexp: '^BOOTPROTO.*'
+      replace: 'BOOTPROTO=none'
+      group: root
+      mode: 0644
+    when: nic_count|int == 0
+
+  - name: remove static IP on  baremtal nic if there are no tenant nics
+    lineinfile:
+      path: "/etc/sysconfig/network-scripts/ifcfg-{{ baremetal_nic }}"
+      regexp: '^IPADDR.*'
+      state: absent
+    when: nic_count|int == 0
+
+  - name: remove static IP on  baremtal nic if there are no tenant nics
+    lineinfile:
+      path: "/etc/sysconfig/network-scripts/ifcfg-{{ baremetal_nic }}"
+      regexp: '^PREFIX.*'
+      state: absent
+    when: nic_count|int == 0
+
+  - name: remove static IP on  baremtal nic if there are no tenant nics
+    lineinfile:
+      path: "/etc/sysconfig/network-scripts/ifcfg-{{ baremetal_nic }}"
+      regexp: '^GATEWAY.*'
+      state: absent
+    when: nic_count|int == 0
+
+  - name: Restart Network
+    shell: sleep 2 && systemctl restart network
+    async: 1
+    poll: 0
+    ignore_errors: true
+
+- hosts: localhost
+  gather_facts: no
+  tasks:
+
+  - name: Set this server to the IP from the neutron port so we can connect to new interface
+    tags: postconfig
+    add_host:
+      name: tenant1-server1
+      groups: testservers
+      ansible_user: cloud-user
+      ansible_ssh_host: "{{ ip_address }}"
+
+  - name: Wait for SSH on the Instance
+    command: >
+      ssh -oBatchMode=yes -oStrictHostKeyChecking=no
+      cloud-user@{{ip_address}} true
+    register: result
+    until: result|success
+    retries: 30
+    delay: 10
+
+  - debug:
+      msg: "OK now baremetal host is available on {{ ip_address }}"
+
+- hosts: testservers
+  become: true
+  tasks:
+
+  - name: create test file
+    tags: postconfig
+    copy:
+      content: "test! - I connect via IP: {{ansible_ssh_host}} \n"
+      dest: /root/testfile

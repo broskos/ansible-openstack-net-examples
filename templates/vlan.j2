@@ -1,0 +1,7 @@
+DEVICE={{ vlan_interface }}.{{ hostvars['localhost'].vlan }}
+BOOTPROTO=none
+ONBOOT=yes
+IPADDR={{ hostvars['localhost'].ip_address }}
+PREFIX={{ hostvars['localhost'].prefix }}
+GATEWAY={{ hostvars['localhost'].gateway_ip }}
+VLAN=yes

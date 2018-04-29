@@ -1,0 +1,9 @@
+# configured via ansible
+BOOTPROTO="none"
+DEVICE="{{ item }}"
+ONBOOT=yes
+TYPE=Ethernet
+{% if nic_count|int > 1 %}
+SLAVE=YES
+MASTER=bond0
+{% endif %}
